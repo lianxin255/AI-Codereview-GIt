@@ -20,7 +20,13 @@ class MergeRequestReviewEntity:
     @property
     def commit_messages(self):
         # 合并所有 commit 的 message 属性，用分号分隔
-        return "; ".join(commit["message"].strip() for commit in self.commits)
+        messages = []
+        for commit in self.commits:
+            # 兼容不同数据结构: commit["message"] 或 commit["commit"]["message"]
+            msg = commit.get("message") or commit.get("commit", {}).get("message", "")
+            if msg:
+                messages.append(msg.strip())
+        return "; ".join(messages)
 
 
 class PushReviewEntity:
@@ -42,4 +48,3 @@ class PushReviewEntity:
     def commit_messages(self):
         # 合并所有 commit 的 message 属性，用分号分隔
         return "; ".join(commit["message"].strip() for commit in self.commits)
-
