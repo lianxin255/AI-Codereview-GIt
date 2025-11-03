@@ -332,14 +332,17 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
             project_name = webhook_data.get('repository', {}).get('name')
             source_branch = pull_request.get('head', {}).get('ref')
             target_branch = pull_request.get('base', {}).get('ref')
-            
             if ReviewService.check_mr_last_commit_id_exists(project_name, source_branch, target_branch, gitea_last_commit_id):
                 logger.info(f"Pull Request with last_commit_id {gitea_last_commit_id} already exists, skipping review for {project_name}.")
                 return
 
         changes = handler.get_pull_request_changes()
         logger.info('changes: %s', changes)
+        supported_extensions = os.getenv('SUPPORTED_EXTENSIONS', '')
+        logger.info('SUPPORTED_EXTENSIONS: %s', supported_extensions)
+        # changes_before_filter = len(changes)
         changes = filter_gitea_changes(changes)
+        # logger.info('Changes before filter: %d, after filter: %d', changes_before_filter, len(changes))
         if not changes:
             logger.info('未检测到有关代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
             return
@@ -354,8 +357,16 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
         if not commits:
             logger.error('Failed to get commits')
             return
+        logger.info('commits: %s', commits)
+        # Extract and clean commit messages, removing trailing newlines and empty strings
+        commit_messages = [
+            commit.get('commit', {}).get('message', '').strip() 
+            for commit in commits
+        ]
+        commit_messages = [msg for msg in commit_messages if msg]  # Filter out empty messages
+        commits_text = '; '.join(commit_messages)
 
-        commits_text = ';'.join(commit.get('commit', {}).get('message', '') for commit in commits)
+        logger.info('commits_text: %s', commits_text)
         review_result = CodeReviewer().review_and_strip_code(str(changes), commits_text)
 
         handler.add_pull_request_comment(f'Auto Review Result: \n{review_result}')
