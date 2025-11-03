@@ -7,11 +7,35 @@ from biz.utils.log import logger
 
 
 def filter_changes(changes: list) -> list:
-    supported_extensions = os.getenv('SUPPORTED_EXTENSIONS', '').split(',')
-    filtered_changes = [
-        change for change in changes
-        if any(change.get('new_path', '').endswith(ext) for ext in supported_extensions)
+    supported_extensions_str = os.getenv("SUPPORTED_EXTENSIONS", "")
+    if not supported_extensions_str:
+        logger.warning(
+            "SUPPORTED_EXTENSIONS environment variable is not set or empty. No changes will be filtered."
+        )
+        return []
+
+    supported_extensions = [
+        ext.strip() for ext in supported_extensions_str.split(",") if ext.strip()
     ]
+    if not supported_extensions:
+        logger.warning(
+            "SUPPORTED_EXTENSIONS is empty after parsing. No changes will be filtered."
+        )
+        return []
+
+    logger.info(f"Filtering changes with supported extensions: {supported_extensions}")
+    filtered_changes = []
+    for change in changes:
+        new_path = change.get("new_path", "")
+        if any(new_path.endswith(ext) for ext in supported_extensions):
+            filtered_changes.append(change)
+            logger.debug(f"File {new_path} matches supported extensions")
+        else:
+            logger.debug(
+                f"File {new_path} does not match supported extensions, filtered out"
+            )
+
+    logger.info(f"Filtered {len(filtered_changes)} out of {len(changes)} changes")
     return filtered_changes
 
 
@@ -27,13 +51,13 @@ class PullRequestHandler:
         self.parse_pull_request_event()
 
     def parse_pull_request_event(self):
-        self.action = self.webhook_data.get('action')
-        pull_request = self.webhook_data.get('pull_request', {})
-        self.pull_request_index = pull_request.get('number')
-        base = pull_request.get('base', {})
-        repo = base.get('repo', {})
-        self.repo_owner = repo.get('owner', {}).get('login')
-        self.repo_name = repo.get('name')
+        self.action = self.webhook_data.get("action")
+        pull_request = self.webhook_data.get("pull_request", {})
+        self.pull_request_index = pull_request.get("number")
+        base = pull_request.get("base", {})
+        repo = base.get("repo", {})
+        self.repo_owner = repo.get("owner", {}).get("login")
+        self.repo_name = repo.get("name")
 
     def get_pull_request_changes(self) -> list:
         max_retries = 3
@@ -41,28 +65,39 @@ class PullRequestHandler:
         for attempt in range(max_retries):
             url = f"{self.gitea_url}/api/v1/repos/{self.repo_owner}/{self.repo_name}/pulls/{self.pull_request_index}/files"
             headers = {
-                'Authorization': f'token {self.gitea_token}',
-                'Content-Type': 'application/json'
+                "Authorization": f"token {self.gitea_token}",
+                "Content-Type": "application/json",
             }
             response = requests.get(url, headers=headers, verify=False)
-            logger.debug(f"Get PR files from Gitea (attempt {attempt + 1}): {response.status_code}, {response.text}")
+            logger.debug(
+                f"Get PR files from Gitea (attempt {attempt + 1}): {response.status_code}, {response.text}"
+            )
 
             if response.status_code == 200:
                 files = response.json()
                 if files:
                     changes = []
                     for file in files:
-                        changes.append({
-                            'old_path': file.get('filename'),
-                            'new_path': file.get('filename'),
-                            'diff': file.get('patch', '')
-                        })
+                        changes.append(
+                            {
+                                "old_path": file.get("filename"),
+                                "new_path": file.get("filename"),
+                                "diff": file.get("patch", ""),
+                                "additions": file.get("additions", 0),
+                                "deletions": file.get("deletions", 0),
+                            }
+                        )
+                    logger.info(f"Retrieved {len(changes)} file changes from PR")
                     return changes
                 else:
-                    logger.info(f"Files is empty, retrying in {retry_delay} seconds... (attempt {attempt + 1}/{max_retries})")
+                    logger.info(
+                        f"Files is empty, retrying in {retry_delay} seconds... (attempt {attempt + 1}/{max_retries})"
+                    )
                     time.sleep(retry_delay)
             else:
-                logger.warn(f"Failed to get PR files from Gitea: {response.status_code}, {response.text}")
+                logger.warn(
+                    f"Failed to get PR files from Gitea: {response.status_code}, {response.text}"
+                )
                 return []
 
         logger.warning(f"Max retries ({max_retries}) reached. Files is still empty.")
@@ -70,29 +105,31 @@ class PullRequestHandler:
 
     def get_pull_request_commits(self) -> list:
         url = f"{self.gitea_url}/api/v1/repos/{self.repo_owner}/{self.repo_name}/pulls/{self.pull_request_index}/commits"
-        headers = {
-            'Authorization': f'token {self.gitea_token}'
-        }
+        headers = {"Authorization": f"token {self.gitea_token}"}
         response = requests.get(url, headers=headers, verify=False)
-        logger.debug(f"Get PR commits from Gitea: {response.status_code}, {response.text}")
+        logger.debug(
+            f"Get PR commits from Gitea: {response.status_code}, {response.text}"
+        )
 
         if response.status_code == 200:
             return response.json()
         else:
-            logger.warn(f"Failed to get PR commits: {response.status_code}, {response.text}")
+            logger.warn(
+                f"Failed to get PR commits: {response.status_code}, {response.text}"
+            )
             return []
 
     def add_pull_request_comment(self, review_result):
         url = f"{self.gitea_url}/api/v1/repos/{self.repo_owner}/{self.repo_name}/issues/{self.pull_request_index}/comments"
         headers = {
-            'Authorization': f'token {self.gitea_token}',
-            'Content-Type': 'application/json'
+            "Authorization": f"token {self.gitea_token}",
+            "Content-Type": "application/json",
         }
-        data = {
-            'body': review_result
-        }
+        data = {"body": review_result}
         response = requests.post(url, headers=headers, json=data, verify=False)
-        logger.debug(f"Add comment to Gitea PR: {response.status_code}, {response.text}")
+        logger.debug(
+            f"Add comment to Gitea PR: {response.status_code}, {response.text}"
+        )
         if response.status_code == 201:
             logger.info("Comment successfully added to pull request.")
         else:
@@ -100,21 +137,25 @@ class PullRequestHandler:
             logger.error(response.text)
 
     def target_branch_protected(self) -> bool:
-        pull_request = self.webhook_data.get('pull_request', {})
-        target_branch = pull_request.get('base', {}).get('ref')
+        pull_request = self.webhook_data.get("pull_request", {})
+        target_branch = pull_request.get("base", {}).get("ref")
 
         url = f"{self.gitea_url}/api/v1/repos/{self.repo_owner}/{self.repo_name}/branch_protections"
-        headers = {
-            'Authorization': f'token {self.gitea_token}'
-        }
+        headers = {"Authorization": f"token {self.gitea_token}"}
         response = requests.get(url, headers=headers, verify=False)
-        logger.debug(f"Get protected branches from Gitea: {response.status_code}, {response.text}")
+        logger.debug(
+            f"Get protected branches from Gitea: {response.status_code}, {response.text}"
+        )
 
         if response.status_code == 200:
             data = response.json()
-            return any(fnmatch.fnmatch(target_branch, item['branch_name']) for item in data)
+            return any(
+                fnmatch.fnmatch(target_branch, item["branch_name"]) for item in data
+            )
         else:
-            logger.warn(f"Failed to get protected branches: {response.status_code}, {response.text}")
+            logger.warn(
+                f"Failed to get protected branches: {response.status_code}, {response.text}"
+            )
             return False
 
 
@@ -130,11 +171,11 @@ class PushHandler:
         self.parse_push_event()
 
     def parse_push_event(self):
-        repository = self.webhook_data.get('repository', {})
-        self.repo_owner = repository.get('owner', {}).get('login')
-        self.repo_name = repository.get('name')
-        self.branch_name = self.webhook_data.get('ref', '').replace('refs/heads/', '')
-        self.commit_list = self.webhook_data.get('commits', [])
+        repository = self.webhook_data.get("repository", {})
+        self.repo_owner = repository.get("owner", {}).get("login")
+        self.repo_name = repository.get("name")
+        self.branch_name = self.webhook_data.get("ref", "").replace("refs/heads/", "")
+        self.commit_list = self.webhook_data.get("commits", [])
 
     def get_push_commits(self) -> list:
         if not self.commit_list:
@@ -144,10 +185,10 @@ class PushHandler:
         commit_details = []
         for commit in self.commit_list:
             commit_info = {
-                'message': commit.get('message'),
-                'author': commit.get('author', {}).get('name'),
-                'timestamp': commit.get('timestamp'),
-                'url': commit.get('url'),
+                "message": commit.get("message"),
+                "author": commit.get("author", {}).get("name"),
+                "timestamp": commit.get("timestamp"),
+                "url": commit.get("url"),
             }
             commit_details.append(commit_info)
 
@@ -159,21 +200,21 @@ class PushHandler:
             logger.warn("No commits found to add notes to.")
             return
 
-        last_commit_id = self.commit_list[-1].get('id')
+        last_commit_id = self.commit_list[-1].get("id")
         if not last_commit_id:
             logger.error("Last commit ID not found.")
             return
 
         url = f"{self.gitea_url}/api/v1/repos/{self.repo_owner}/{self.repo_name}/commits/{last_commit_id}/comments"
         headers = {
-            'Authorization': f'token {self.gitea_token}',
-            'Content-Type': 'application/json'
+            "Authorization": f"token {self.gitea_token}",
+            "Content-Type": "application/json",
         }
-        data = {
-            'body': message
-        }
+        data = {"body": message}
         response = requests.post(url, headers=headers, json=data, verify=False)
-        logger.debug(f"Add comment to commit {last_commit_id}: {response.status_code}, {response.text}")
+        logger.debug(
+            f"Add comment to commit {last_commit_id}: {response.status_code}, {response.text}"
+        )
         if response.status_code == 201:
             logger.info("Comment successfully added to push commit.")
         else:
@@ -182,24 +223,26 @@ class PushHandler:
 
     def repository_compare(self, before: str, after: str):
         url = f"{self.gitea_url}/api/v1/repos/{self.repo_owner}/{self.repo_name}/compare/{before}...{after}"
-        headers = {
-            'Authorization': f'token {self.gitea_token}'
-        }
+        headers = {"Authorization": f"token {self.gitea_token}"}
         response = requests.get(url, headers=headers, verify=False)
         logger.debug(f"Get compare from Gitea: {response.status_code}, {response.text}")
 
         if response.status_code == 200:
-            files = response.json().get('files', [])
+            files = response.json().get("files", [])
             changes = []
             for file in files:
-                changes.append({
-                    'old_path': file.get('filename'),
-                    'new_path': file.get('filename'),
-                    'diff': file.get('patch', '')
-                })
+                changes.append(
+                    {
+                        "old_path": file.get("filename"),
+                        "new_path": file.get("filename"),
+                        "diff": file.get("patch", ""),
+                    }
+                )
             return changes
         else:
-            logger.warn(f"Failed to get compare: {response.status_code}, {response.text}")
+            logger.warn(
+                f"Failed to get compare: {response.status_code}, {response.text}"
+            )
             return []
 
     def get_push_changes(self) -> list:
@@ -207,13 +250,13 @@ class PushHandler:
             logger.info("No commits found in push event.")
             return []
 
-        before = self.webhook_data.get('before', '')
-        after = self.webhook_data.get('after', '')
+        before = self.webhook_data.get("before", "")
+        after = self.webhook_data.get("after", "")
 
         if before and after:
-            if after.startswith('0000000'):
+            if after.startswith("0000000"):
                 return []
-            if before.startswith('0000000'):
+            if before.startswith("0000000"):
                 before = f"{after}^"
             return self.repository_compare(before, after)
         else:
