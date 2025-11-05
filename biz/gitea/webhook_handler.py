@@ -78,11 +78,33 @@ class PullRequestHandler:
                 if files:
                     changes = []
                     for file in files:
+                        # Gitea API may not include patch in files endpoint response
+                        # Try to get patch from the file data, if not available, fetch diff separately
+                        patch = file.get("patch", "")
+                        
+                        # If patch is empty, try to get diff from .diff endpoint
+                        if not patch:
+                            diff_url = f"{self.gitea_url}/api/v1/repos/{self.repo_owner}/{self.repo_name}/pulls/{self.pull_request_index}.diff"
+                            try:
+                                diff_response = requests.get(diff_url, headers=headers, verify=False)
+                                if diff_response.status_code == 200:
+                                    full_diff = diff_response.text
+                                    # Extract diff for this specific file from the full diff
+                                    filename = file.get("filename")
+                                    if filename and filename in full_diff:
+                                        # Simple extraction - find the diff section for this file
+                                        patch = self._extract_file_diff(full_diff, filename)
+                                        logger.debug(f"Fetched diff for {filename} from .diff endpoint")
+                                else:
+                                    logger.warning(f"Failed to fetch diff from .diff endpoint: {diff_response.status_code}")
+                            except Exception as e:
+                                logger.warning(f"Error fetching diff from .diff endpoint: {e}")
+                        
                         changes.append(
                             {
                                 "old_path": file.get("filename"),
                                 "new_path": file.get("filename"),
-                                "diff": file.get("patch", ""),
+                                "diff": patch,
                                 "additions": file.get("additions", 0),
                                 "deletions": file.get("deletions", 0),
                             }
@@ -102,6 +124,25 @@ class PullRequestHandler:
 
         logger.warning(f"Max retries ({max_retries}) reached. Files is still empty.")
         return []
+
+    def _extract_file_diff(self, full_diff: str, filename: str) -> str:
+        """Extract diff content for a specific file from the full diff text"""
+        lines = full_diff.split('\n')
+        result_lines = []
+        in_file = False
+        
+        for line in lines:
+            # Check if this is the start of our file's diff
+            if line.startswith('diff --git') and filename in line:
+                in_file = True
+                result_lines.append(line)
+            elif in_file:
+                # Check if we've hit the next file's diff
+                if line.startswith('diff --git'):
+                    break
+                result_lines.append(line)
+        
+        return '\n'.join(result_lines) if result_lines else ""
 
     def get_pull_request_commits(self) -> list:
         url = f"{self.gitea_url}/api/v1/repos/{self.repo_owner}/{self.repo_name}/pulls/{self.pull_request_index}/commits"
